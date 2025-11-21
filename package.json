@@ -1,0 +1,21 @@
+{
+  "name": "rendergit",
+  "version": "0.2.0",
+  "description": "Flatten a Git repository into a single static HTML page for fast skimming and search.",
+  "type": "module",
+  "bin": {
+    "rendergit-js": "./rendergit.mjs"
+  },
+  "scripts": {
+    "start": "node ./rendergit.mjs"
+  },
+  "dependencies": {
+    "@wooorm/starry-night": "^3.8.0",
+    "hast-util-to-html": "^9.0.0",
+    "marked": "^12.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "0BSD"
+}

@@ -486,7 +486,7 @@ async function buildHtml(repoLabel, repoDir, headCommit, infos, highlighter) {
 
     sections.push(`
 <section class="file-section" id="file-${anchor}">
-  <h2><code>${escapeHtml(info.rel)}</code></h2>
+  <h2><code>${escapeHtml(info.rel)}</code><span class="file-controls"><button class="auto-scroll-button secondary file-scroll-button" type="button" aria-label="Restart auto-scroll for ${escapeHtml(info.rel)}">&#9654;</button></span></h2>
   <div class="file-body">${bodyHtml}</div>
 </section>
 `);
@@ -513,35 +513,83 @@ async function buildHtml(repoLabel, repoDir, headCommit, infos, highlighter) {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, 'Apple Color Emoji','Segoe UI Emoji';
     margin: 0; padding: 0; line-height: 1.45;
   }
-  .container { max-width: 1100px; margin: 0 auto; padding: 0 1rem; }
+  .container { margin: 0 auto; padding: 0 1rem; }
   .meta small { color: #666; }
   .counts { margin-top: 0.25rem; color: #333; }
   .muted { color: #777; font-weight: normal; font-size: 0.9em; }
 
   main.container { padding-top: 1rem; }
 
+  .meta-bar {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+    margin-bottom: 1rem; 
+  }
+  .meta-bar .meta { flex: 1 1 auto; }
+
+  .auto-scroll-button {
+    background: #2563eb;
+    color: #ffffff;
+    border: none;
+    border-radius: 999px;
+    padding: 0.5rem 1rem;
+    font-size: 0.95rem;
+    cursor: pointer;
+    box-shadow: 0 4px 12px rgba(15, 23, 42, 0.25);
+    transition: background 0.2s ease, transform 0.2s ease;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  .auto-scroll-button:hover {
+    background: #1e4fd1;
+    transform: translateY(-1px);
+  }
+  .auto-scroll-button:focus-visible {
+    outline: 2px solid #1e4fd1;
+    outline-offset: 2px;
+  }
+  .auto-scroll-button.active {
+    background: #1e4fd1;
+  }
+  .auto-scroll-button.secondary {
+    padding: 0.35rem 0.75rem;
+    font-size: 0.85rem;
+    box-shadow: none;
+  }
+
   pre { background: #ffffff; padding: 0; overflow: auto; border-radius: 0; margin: 0; }
   code { font-family: "SF Mono", "Source Code Pro", monospace; }
   .highlight { overflow-x: auto; background: #ffffff; padding: 0; margin: 0; }
   .highlight pre { background: #ffffff; border: none; margin: 0; padding: 0; }
-  .file-section { margin: 2rem 0 0 0; padding: 0; }
+  .file-section { margin: 0; padding: 0; }
   .file-section > h2 {
     margin: 0 -1rem;
     font-size: 1.15rem;
     font-weight: 600;
     background: #f2f4f8;
     padding: 0.9rem 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
   }
   .file-section h2 code {
     font-family: "SF Mono", "Source Code Pro", monospace;
     font-size: 1em;
     padding: 0;
     border-radius: 0;
+    flex: 1 1 auto;
+    overflow-wrap: anywhere;
   }
+  .file-section h2 .file-controls { margin-left: auto; display: inline-flex; align-items: center; gap: 0.5rem; }
+  .file-section h2 .file-controls button { margin: 0; }
   pre {
     font-size: 16px;
   }
-  .file-body { margin-bottom: 0.5rem; background: #ffffff; padding: 1rem 0 0 0; }
+  .file-body { background: #ffffff; padding: 1rem 1rem 0 0; }
   .binary-view pre { margin-bottom: 0.75rem; }
   .image-view { padding: 0 1rem 1rem 1rem; }
   .image-view img { max-width: 100%; height: auto; display: block; }
@@ -560,7 +608,7 @@ ${STARLIGHT_THEME_CSS}
 
 <main class="container">
 
-    <section>
+    <section class="meta-bar">
         <div class="meta">
         <div><strong>Repository:</strong> <a href="${escapeHtml(repoLabel)}">${escapeHtml(repoLabel)}</a></div>
         <small><strong>HEAD commit:</strong> ${escapeHtml(headCommit)}</small>
@@ -568,12 +616,138 @@ ${STARLIGHT_THEME_CSS}
             <strong>Total files:</strong> ${totalFiles} · <strong>Rendered:</strong> ${rendered.length} · <strong>Skipped:</strong> ${skippedBinary.length + skippedLargeData.length + skippedIgnored.length} · <strong>Size:</strong> ${renderedLineCount.toLocaleString()} lines
         </div>
         </div>
+        <button id="auto-scroll-toggle" class="auto-scroll-button" type="button" aria-pressed="false">Start Auto Scroll</button>
     </section>
 
     ${skippedSection}
 
     ${sections.join("")}
 </main>
+<script>
+(() => {
+  const toggleButton = document.getElementById("auto-scroll-toggle");
+  if (!toggleButton) return;
+
+  const sectionButtons = Array.from(document.querySelectorAll(".file-scroll-button"));
+  let frameId = null;
+  const STEP_PX = 1.5;
+  let internalScrollGuards = 0;
+
+  const setRunningState = running => {
+    toggleButton.textContent = running ? "Stop Auto Scroll" : "Start Auto Scroll";
+    toggleButton.classList.toggle("active", running);
+    toggleButton.setAttribute("aria-pressed", running ? "true" : "false");
+  };
+
+  setRunningState(false);
+
+  const withInternalScroll = fn => {
+    internalScrollGuards += 1;
+    try {
+      fn();
+    } finally {
+      requestAnimationFrame(() => {
+        internalScrollGuards = Math.max(0, internalScrollGuards - 1);
+      });
+    }
+  };
+
+  const stop = () => {
+    if (!frameId) return;
+    cancelAnimationFrame(frameId);
+    frameId = null;
+    internalScrollGuards = 0;
+    setRunningState(false);
+  };
+
+  const performScroll = () => {
+    if (!frameId) return;
+    const doc = document.documentElement;
+    const maxScroll = Math.max(0, doc.scrollHeight - window.innerHeight);
+    const current = window.scrollY || doc.scrollTop || 0;
+    if (current >= maxScroll - 1) {
+      withInternalScroll(() => window.scrollTo(0, 0));
+    } else {
+      withInternalScroll(() => window.scrollBy(0, STEP_PX));
+    }
+    frameId = requestAnimationFrame(performScroll);
+  };
+
+  const start = ({force = false, randomize = false} = {}) => {
+    if (frameId && !force) return;
+    if (randomize) {
+      const doc = document.documentElement;
+      const maxScroll = Math.max(0, doc.scrollHeight - window.innerHeight);
+      if (maxScroll > 0) {
+        const target = Math.random() * maxScroll;
+        withInternalScroll(() => window.scrollTo(0, target));
+      }
+    }
+    if (frameId && force) {
+      cancelAnimationFrame(frameId);
+      frameId = null;
+    }
+    setRunningState(true);
+    frameId = requestAnimationFrame(performScroll);
+  };
+
+  toggleButton.addEventListener("click", () => {
+    if (frameId) {
+      stop();
+    } else {
+      start({randomize: true});
+    }
+  });
+
+  sectionButtons.forEach(button => {
+    button.addEventListener("click", () => {
+      start({force: true});
+    });
+  });
+
+  window.addEventListener("scroll", () => {
+    if (!frameId || internalScrollGuards > 0) return;
+    stop();
+  }, {passive: true});
+
+  const controlTargets = new Set([...sectionButtons, toggleButton]);
+
+  const isControl = target => {
+    for (const element of controlTargets) {
+      if (element && element.contains(target)) return true;
+    }
+    return false;
+  };
+
+  const stopOnPointer = event => {
+    if (!frameId) return;
+    if (isControl(event.target)) return;
+    stop();
+  };
+
+  window.addEventListener("wheel", () => {
+    if (!frameId) return;
+    stop();
+  }, {passive: true});
+
+  window.addEventListener("touchstart", stopOnPointer, {passive: true});
+  document.addEventListener("pointerdown", stopOnPointer, {passive: true});
+
+  const SCROLL_KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", "Home", "End", " "]);
+  document.addEventListener("keydown", event => {
+    if (!frameId) return;
+    if (SCROLL_KEYS.has(event.key)) {
+      stop();
+    }
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      stop();
+    }
+  });
+})();
+</script>
 </body>
 </html>`;
 }
