@@ -589,7 +589,7 @@ async function buildHtml(repoLabel, repoDir, headCommit, infos, highlighter) {
   pre {
     font-size: 16px;
   }
-  .file-body { background: #ffffff; padding: 1rem 1rem 0 0; }
+  .file-body { background: #ffffff; padding: 1rem 0 1rem 0; }
   .binary-view pre { margin-bottom: 0.75rem; }
   .image-view { padding: 0 1rem 1rem 1rem; }
   .image-view img { max-width: 100%; height: auto; display: block; }
