@@ -201,8 +201,24 @@ async function readText(filePath) {
   return fs.readFile(filePath, "utf8");
 }
 
-function renderMarkdown(text) {
-  return marked.parse(text, {mangle: false, headerIds: false});
+function renderMarkdown(text, highlighter) {
+  const renderer = new marked.Renderer();
+  renderer.code = (code, infoString) => {
+    const lang = (infoString || "").split(/\s+/)[0];
+    const scope = lang ? resolveScope(highlighter, lang) : null;
+    if (scope) {
+      try {
+        const tree = highlighter.highlight(code, scope);
+        const codeHtml = toHtml(tree);
+        return `<div class="highlight"><pre>${codeHtml}</pre></div>`;
+      } catch {
+        // fall through to plain rendering if highlighting fails
+      }
+    }
+    const classAttr = lang ? ` class="language-${escapeHtml(lang)}"` : "";
+    return `<pre><code${classAttr}>${escapeHtml(code)}</code></pre>`;
+  };
+  return marked.parse(text, {renderer, mangle: false, headerIds: false});
 }
 
 function slugify(value) {
@@ -412,7 +428,7 @@ function deriveOutputPath(repoLabel) {
   return path.join(os.tmpdir(), `${name}.html`);
 }
 
-async function buildHtml(repoLabel, repoDir, headCommit, infos, highlighter) {
+async function buildHtml(repoLabel, repoDir, headCommit, infos, highlighter, sortMode) {
   let rendered = infos.filter(info => info.decision.include);
   const skippedBinary = infos.filter(info => !info.decision.include && info.decision.reason === "binary");
   const skippedLargeData = infos.filter(info => !info.decision.include && info.decision.reason === "too_large");
@@ -420,8 +436,12 @@ async function buildHtml(repoLabel, repoDir, headCommit, infos, highlighter) {
   const totalFiles = rendered.length + skippedBinary.length + skippedLargeData.length + skippedIgnored.length;
 
   if (rendered.length > 0) {
-    const fileAgeMap = await gatherOldestCommitTimes(repoDir, rendered.map(info => info.rel));
-    rendered = orderInfosByOldest(rendered, fileAgeMap);
+    if (sortMode === "age") {
+      const fileAgeMap = await gatherOldestCommitTimes(repoDir, rendered.map(info => info.rel));
+      rendered = orderInfosByOldest(rendered, fileAgeMap);
+    } else {
+      rendered.sort((a, b) => a.rel.localeCompare(b.rel, "en", {sensitivity: "base"}));
+    }
   }
 
   let topLevelReadmeIndex = -1;
@@ -465,7 +485,7 @@ async function buildHtml(repoLabel, repoDir, headCommit, infos, highlighter) {
         info.lineCount = lineCount;
         renderedLineCount += lineCount;
         if (MARKDOWN_EXTENSIONS.has(ext)) {
-          bodyHtml = renderMarkdown(text);
+          bodyHtml = renderMarkdown(text, highlighter);
         } else {
           const scope = resolveScope(highlighter, info.rel);
           if (scope) {
@@ -768,7 +788,7 @@ function resolveScope(highlighter, relPath) {
 }
 
 function parseArgs(argv) {
-  const args = {repo: null, out: null, maxBytes: MAX_DEFAULT_BYTES, noOpen: false};
+  const args = {repo: null, out: null, maxBytes: MAX_DEFAULT_BYTES, noOpen: false, sort: "age"};
   const queue = [...argv];
   while (queue.length > 0) {
     const token = queue.shift();
@@ -782,6 +802,11 @@ function parseArgs(argv) {
       const num = Number(value);
       if (!Number.isFinite(num) || num <= 0) throw new Error("--max-bytes must be a positive number");
       args.maxBytes = num;
+    } else if (token === "--sort" || token.startsWith("--sort=")) {
+      const value = token.includes("=") ? token.slice(token.indexOf("=") + 1) : queue.shift();
+      if (!value) throw new Error("--sort requires a value");
+      if (value !== "age" && value !== "filename") throw new Error("--sort must be 'age' or 'filename'");
+      args.sort = value;
     } else if (token === "--no-open") {
       args.noOpen = true;
     } else if (token.startsWith("-")) {
@@ -802,7 +827,7 @@ async function main() {
     parsedArgs = parseArgs(process.argv.slice(2));
   } catch (error) {
     console.error(`Error: ${error.message}`);
-    console.error("Usage: rendergit-js <repo> [-o output.html] [--max-bytes N] [--no-open]");
+    console.error("Usage: rendergit-js <repo> [-o output.html] [--max-bytes N] [--sort=age|filename] [--no-open]");
     process.exit(1);
     return;
   }
@@ -845,13 +870,14 @@ async function main() {
   } else {
     console.error(`📊 Scanning files in ${repoDir}...`);
   }
+  console.error(`↕️  Sorting mode: ${parsedArgs.sort === "age" ? "age (uses git history)" : "filename (lexicographic)"}`);
   const infos = await collectFiles(repoDir, parsedArgs.maxBytes, trackedFiles);
   const renderedCount = infos.filter(info => info.decision.include).length;
   const skippedCount = infos.length - renderedCount;
   console.error(`✓ Found ${infos.length} files total (${renderedCount} rendered, ${skippedCount} skipped)`);
 
   console.error("🔨 Generating HTML...");
-  const html = await buildHtml(displayRepo, repoDir, headCommit, infos, highlighter);
+  const html = await buildHtml(displayRepo, repoDir, headCommit, infos, highlighter, parsedArgs.sort);
 
   await fs.writeFile(parsedArgs.out, html, "utf8");
   const stat = await fs.stat(parsedArgs.out);
